@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ClipCutter - Free Video Clip Maker</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: #0f0f0f;
+  color: #e0e0e0;
+  min-height: 100vh;
+  padding: 16px;
+}
+.container { max-width: 700px; margin: 0 auto; }
+h1 { text-align: center; font-size: 1.8rem; margin: 12px 0 4px; color: #ff5252; }
+.subtitle { text-align: center; font-size: 0.85rem; color: #888; margin-bottom: 20px; }
+.card {
+  background: #1a1a2e;
+  border-radius: 14px;
+  padding: 18px;
+  margin-bottom: 14px;
+  border: 1px solid #2a2a4a;
+}
+.card h2 { font-size: 1.05rem; margin-bottom: 12px; color: #aaa; display: flex; align-items: center; gap: 8px; }
+.step-num {
+  background: #ff5252; color: white; border-radius: 50%;
+  width: 24px; height: 24px; display: flex; align-items: center;
+  justify-content: center; font-size: 0.8rem; font-weight: bold;
+}
+.upload-zone {
+  border: 2px dashed #444;
+  border-radius: 10px;
+  padding: 28px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.upload-zone:hover { border-color: #ff5252; background: #1a1a3a; }
+.upload-zone input { display: none; }
+.upload-zone p { color: #888; margin-top: 6px; font-size: 0.85rem; }
+#videoPreview { max-width: 100%; max-height: 220px; border-radius: 8px; margin-top: 10px; display: none; }
+.form-row { display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.form-group { flex: 1; min-width: 140px; }
+label { display: block; font-size: 0.8rem; color: #888; margin-bottom: 4px; }
+select, input[type="number"] {
+  width: 100%; padding: 8px 10px; background: #12122a;
+  border: 1px solid #333; border-radius: 8px; color: #e0e0e0;
+  font-size: 0.9rem;
+}
+select:focus, input:focus { outline: none; border-color: #ff5252; }
+.btn {
+  display: block; width: 100%; padding: 12px;
+  border: none; border-radius: 10px; font-size: 1rem;
+  font-weight: 600; cursor: pointer; transition: all 0.2s;
+}
+.btn-primary { background: #ff5252; color: white; }
+.btn-primary:hover { background: #e83838; }
+.btn-primary:disabled { background: #444; color: #888; cursor: not-allowed; }
+.btn-secondary { background: #2a2a4a; color: #e0e0e0; margin-top: 8px; }
+.btn-secondary:hover { background: #3a3a5a; }
+.btn-secondary:disabled { opacity: 0.4; cursor: not-allowed; }
+.progress-wrap { display: none; margin-top: 12px; }
+.progress-bar {
+  height: 8px; background: #2a2a4a; border-radius: 4px;
+  overflow: hidden; margin-bottom: 6px;
+}
+.progress-fill {
+  height: 100%; background: linear-gradient(90deg, #ff5252, #ff8a80);
+  width: 0%; transition: width 0.3s;
+}
+.progress-text { font-size: 0.78rem; color: #888; text-align: center; }
+#resultsSection { display: none; }
+.results-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.clip-count { font-size: 0.85rem; color: #888; }
+.clips-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 10px;
+}
+.clip-card {
+  background: #12122a; border-radius: 8px; overflow: hidden;
+  border: 1px solid #2a2a4a;
+}
+.clip-card video { width: 100%; height: 90px; object-fit: cover; background: #000; display: block; }
+.clip-info { padding: 6px 8px; font-size: 0.72rem; color: #888; }
+.clip-info a { color: #ff5252; text-decoration: none; }
+.loading-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.8);
+  display: none; align-items: center; justify-content: center; z-index: 9999;
+  flex-direction: column;
+}
+.loading-overlay .spinner {
+  width: 50px; height: 50px; border: 4px solid #2a2a4a;
+  border-top: 4px solid #ff5252; border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+.loading-overlay p { margin-top: 14px; color: #aaa; font-size: 0.85rem; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.notice {
+  background: #1a2a1a; border: 1px solid #2a4a2a; border-radius: 8px;
+  padding: 10px; font-size: 0.78rem; color: #8a8; margin-bottom: 14px;
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>🎬 ClipCutter</h1>
+  <p class="subtitle">Upload video → Select ratio & clips → Cut → Shuffle → Download All</p>
+
+  <div class="notice">
+    ⚠️ First time use: FFmpeg engine loads (~30MB). Give it 10-20 seconds. After that it's fast.
+  </div>
+
+  <div class="card">
+    <h2><span class="step-num">1</span> Upload Video</h2>
+    <label class="upload-zone" for="fileInput">
+      <div style="font-size:2rem;">📁</div>
+      <p>Tap here to select a video file</p>
+      <input type="file" id="fileInput" accept="video/*">
+    </label>
+    <video id="videoPreview" controls></video>
+  </div>
+
+  <div class="card">
+    <h2><span class="step-num">2</span> Settings</h2>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Aspect Ratio</label>
+        <select id="ratioSelect">
+          <option value="16:9">16:9 (YouTube)</option>
+          <option value="9:16">9:16 (Shorts/Reels)</option>
+          <option value="1:1">1:1 (Square)</option>
+          <option value="4:3">4:3 (Classic)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Number of Clips</label>
+        <input type="number" id="clipCount" value="4" min="2" max="20">
+      </div>
+      <div class="form-group">
+        <label>Clip Duration (sec)</label>
+        <input type="number" id="clipDuration" value="10" min="1" max="60">
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2><span class="step-num">3</span> Cut Clips</h2>
+    <button class="btn btn-primary" id="processBtn" disabled>Cut Video into Clips</button>
+    <div class="progress-wrap" id="progressWrap">
+      <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+      <div class="progress-text" id="progressText">Processing...</div>
+    </div>
+  </div>
+
+  <div class="card" id="resultsSection">
+    <h2><span class="step-num">4</span> Clips Ready!</h2>
+    <div class="results-header">
+      <span class="clip-count" id="clipCountText"></span>
+      <button class="btn btn-secondary" id="shuffleBtn" style="width:auto; padding:6px 14px; margin:0;">🔀 Shuffle</button>
+    </div>
+    <button class="btn btn-primary" id="downloadAllBtn" style="margin-bottom:10px;">⬇ Download All (ZIP)</button>
+    <div class="clips-grid" id="clipsGrid"></div>
+  </div>
+</div>
+
+<div class="loading-overlay" id="loadingOverlay">
+  <div class="spinner"></div>
+  <p id="loadingText">Loading FFmpeg engine...</p>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/umd/index.js"></script>
+
+<script>
+const { FFmpeg } = FFmpegWASM;
+const { fetchFile } = FFmpegUtil;
+const ffmpeg = new FFmpeg();
+
+let ffmpegReady = false;
+let uploadedFile = null;
+let clipsData = [];
+
+const fileInput = document.getElementById('fileInput');
+const videoPreview = document.getElementById('videoPreview');
+const processBtn = document.getElementById('processBtn');
+const progressWrap = document.getElementById('progressWrap');
+const progressFill = document.getElementById('progressFill');
+const progressText = document.getElementById('progressText');
+const resultsSection = document.getElementById('resultsSection');
+const clipsGrid = document.getElementById('clipsGrid');
+const clipCountText = document.getElementById('clipCountText');
+const shuffleBtn = document.getElementById('shuffleBtn');
+const downloadAllBtn = document.getElementById('downloadAllBtn');
+const loadingOverlay = document.getElementById('loadingOverlay');
+const loadingText = document.getElementById('loadingText');
+
+fileInput.addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  uploadedFile = file;
+  const url = URL.createObjectURL(file);
+  videoPreview.src = url;
+  videoPreview.style.display = 'block';
+  processBtn.disabled = false;
+  resultsSection.style.display = 'none';
+  clipsData = [];
+});
+
+async function loadFFmpeg() {
+  if (ffmpegReady) return true;
+  loadingOverlay.style.display = 'flex';
+  loadingText.textContent = 'Loading FFmpeg engine (one-time)...';
+  ffmpeg.on('log', ({ message }) => { console.log('FFmpeg:', message); });
+  const baseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd';
+  try {
+    await ffmpeg.load({
+      coreURL: `${baseURL}/ffmpeg-core.js`,
+      wasmURL: `${baseURL}/ffmpeg-core.wasm`,
+    });
+    ffmpegReady = true;
+    loadingOverlay.style.display = 'none';
+    return true;
+  } catch (err) {
+    loadingText.textContent = 'Error loading FFmpeg: ' + err.message;
+    return false;
+  }
+}
+
+function getCropFilter(ratio) {
+  const ratios = {
+    '16:9': { w: 'iw', h: 'iw*9/16', x: '0', y: '(ih-iw*9/16)/2' },
+    '9:16': { w: 'ih*9/16', h: 'ih', x: '(iw-ih*9/16)/2', y: '0' },
+    '1:1':  { w: 'min(iw,ih)', h: 'min(iw,ih)', x: '(iw-min(iw,ih))/2', y: '(ih-min(iw,ih))/2' },
+    '4:3':  { w: 'iw', h: 'iw*3/4', x: '0', y: '(ih-iw*3/4)/2' },
+  };
+  const r = ratios[ratio];
+  return `crop=${r.w}:${r.h}:${r.x}:${r.y}`;
+}
+
+processBtn.addEventListener('click', async () => {
+  if (!uploadedFile) return;
+  const ready = await loadFFmpeg();
+  if (!ready) return;
+
+  const ratio = document.getElementById('ratioSelect').value;
+  const numClips = parseInt(document.getElementById('clipCount').value);
+  const clipDur = parseInt(document.getElementById('clipDuration').value);
+
+  processBtn.disabled = true;
+  progressWrap.style.display = 'block';
+  resultsSection.style.display = 'none';
+  clipsData = [];
+
+  const v = document.createElement('video');
+  v.preload = 'metadata';
+  v.src = URL.createObjectURL(uploadedFile);
+  await new Promise(resolve => { v.onloadedmetadata = () => resolve(); });
+  const totalDuration = v.duration;
+  URL.revokeObjectURL(v.src);
+
+  const segmentDur = Math.max(1, totalDuration / numClips);
+  const cropFilter = getCropFilter(ratio);
+  const ext = uploadedFile.name.split('.').pop().toLowerCase();
+
+  progressText.textContent = 'Preparing video...';
+  progressFill.style.width = '5%';
+  await ffmpeg.writeFile('input.' + ext, await fetchFile(uploadedFile));
+
+  for (let i = 0; i < numClips; i++) {
+    const startTime = (i * segmentDur).toFixed(2);
+    const outName = `clip_${String(i + 1).padStart(2, '0')}.mp4`;
+    progressText.textContent = `Cutting clip ${i + 1} of ${numClips}...`;
+    progressFill.style.width = (5 + (i / numClips) * 85) + '%';
+
+    await ffmpeg.exec([
+      '-ss', startTime,
+      '-i', 'input.' + ext,
+      '-t', String(clipDur),
+      '-vf', cropFilter,
+      '-c:v', 'libx264',
+      '-preset', 'fast',
+      '-crf', '26',
+      '-c:a', 'aac',
+      '-b:a', '128k',
+      '-movflags', '+faststart',
+      outName
+    ]);
+
+    const data = await ffmpeg.readFile(outName);
+    const blob = new Blob([data.buffer], { type: 'video/mp4' });
+    const url = URL.createObjectURL(blob);
+    clipsData.push({ name: outName, blob: blob, url: url, order: i });
+    await ffmpeg.deleteFile(outName);
+  }
+
+  await ffmpeg.deleteFile('input.' + ext);
+  progressFill.style.width = '100%';
+  progressText.textContent = 'Done!';
+  displayClips();
+  processBtn.disabled = false;
+  progressWrap.style.display = 'none';
+});
+
+function displayClips() {
+  resultsSection.style.display = 'block';
+  clipsGrid.innerHTML = '';
+  clipCountText.textContent = `${clipsData.length} clips generated`;
+  const sorted = [...clipsData].sort((a, b) => a.order - b.order);
+  sorted.forEach((clip, idx) => {
+    const card = document.createElement('div');
+    card.className = 'clip-card';
+    card.innerHTML = `
+      <video src="${clip.url}" controls preload="metadata"></video>
+      <div class="clip-info">
+        #${idx + 1} ${clip.name}<br>
+        <a href="${clip.url}" download="${clip.name}">⬇ Download</a>
+      </div>
+    `;
+    clipsGrid.appendChild(card);
+  });
+  resultsSection.scrollIntoView({ behavior: 'smooth' });
+}
+
+shuffleBtn.addEventListener('click', () => {
+  for (let i = clipsData.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [clipsData[i].order, clipsData[j].order] = [clipsData[j].order, clipsData[i].order];
+  }
+  displayClips();
+});
+
+downloadAllBtn.addEventListener('click', async () => {
+  if (clipsData.length === 0) return;
+  downloadAllBtn.disabled = true;
+  downloadAllBtn.textContent = '⏳ Creating ZIP...';
+  const zip = new JSZip();
+  const sorted = [...clipsData].sort((a, b) => a.order - b.order);
+  sorted.forEach((clip, idx) => {
+    const name = `clip_${String(idx + 1).padStart(2, '0')}.mp4`;
+    zip.file(name, clip.blob);
+  });
+  const content = await zip.generateAsync({ type: 'blob' });
+  const url = URL.createObjectURL(content);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'all_clips.zip';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  downloadAllBtn.disabled = false;
+  downloadAllBtn.textContent = '⬇ Download All (ZIP)';
+});
+</script>
+</body>
+</html>
