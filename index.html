@@ -50,6 +50,11 @@ select, input[type="number"] {
   font-size: 0.9rem;
 }
 select:focus, input:focus { outline: none; border-color: #ff5252; }
+.auto-duration {
+  margin-top: 8px; padding: 8px 10px; background: #12122a;
+  border-radius: 8px; font-size: 0.82rem; color: #8a8;
+  display: none;
+}
 .btn {
   display: block; width: 100%; padding: 12px;
   border: none; border-radius: 10px; font-size: 1rem;
@@ -95,11 +100,16 @@ select:focus, input:focus { outline: none; border-color: #ff5252; }
   border-top: 4px solid #ff5252; border-radius: 50%;
   animation: spin 1s linear infinite;
 }
-.loading-overlay p { margin-top: 14px; color: #aaa; font-size: 0.85rem; }
+.loading-overlay p { margin-top: 14px; color: #aaa; font-size: 0.85rem; text-align: center; padding: 0 20px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .notice {
   background: #1a2a1a; border: 1px solid #2a4a2a; border-radius: 8px;
   padding: 10px; font-size: 0.78rem; color: #8a8; margin-bottom: 14px;
+}
+.error-box {
+  background: #2a1a1a; border: 1px solid #4a2a2a; border-radius: 8px;
+  padding: 10px; font-size: 0.78rem; color: #c88; margin-top: 10px;
+  display: none;
 }
 </style>
 </head>
@@ -109,7 +119,7 @@ select:focus, input:focus { outline: none; border-color: #ff5252; }
   <p class="subtitle">Upload video → Select ratio & clips → Cut → Shuffle → Download All</p>
 
   <div class="notice">
-    ⚠️ First time use: FFmpeg engine loads (~30MB). Give it 10-20 seconds. After that it's fast.
+    ⚠️ First time: FFmpeg engine loads (~30MB, 10-20 sec). After that it's fast. Works best on Chrome.
   </div>
 
   <div class="card">
@@ -138,16 +148,16 @@ select:focus, input:focus { outline: none; border-color: #ff5252; }
         <label>Number of Clips</label>
         <input type="number" id="clipCount" value="4" min="2" max="20">
       </div>
-      <div class="form-group">
-        <label>Clip Duration (sec)</label>
-        <input type="number" id="clipDuration" value="10" min="1" max="60">
-      </div>
+    </div>
+    <div class="auto-duration" id="autoDuration">
+      Each clip will be ~<span id="durText">0</span> seconds long (auto-calculated)
     </div>
   </div>
 
   <div class="card">
     <h2><span class="step-num">3</span> Cut Clips</h2>
     <button class="btn btn-primary" id="processBtn" disabled>Cut Video into Clips</button>
+    <div class="error-box" id="errorBox"></div>
     <div class="progress-wrap" id="progressWrap">
       <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
       <div class="progress-text" id="progressText">Processing...</div>
@@ -171,16 +181,17 @@ select:focus, input:focus { outline: none; border-color: #ff5252; }
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.6/dist/umd/ffmpeg.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/umd/index.js"></script>
 
 <script>
 const { FFmpeg } = FFmpegWASM;
-const { fetchFile } = FFmpegUtil;
+const { fetchFile, toBlobURL } = FFmpegUtil;
 const ffmpeg = new FFmpeg();
 
 let ffmpegReady = false;
 let uploadedFile = null;
+let videoDuration = 0;
 let clipsData = [];
 
 const fileInput = document.getElementById('fileInput');
@@ -196,35 +207,76 @@ const shuffleBtn = document.getElementById('shuffleBtn');
 const downloadAllBtn = document.getElementById('downloadAllBtn');
 const loadingOverlay = document.getElementById('loadingOverlay');
 const loadingText = document.getElementById('loadingText');
+const errorBox = document.getElementById('errorBox');
+const autoDuration = document.getElementById('autoDuration');
+const durText = document.getElementById('durText');
+const clipCountInput = document.getElementById('clipCount');
+
+function showError(msg) {
+  errorBox.textContent = '❌ ' + msg;
+  errorBox.style.display = 'block';
+}
+function hideError() {
+  errorBox.style.display = 'none';
+}
 
 fileInput.addEventListener('change', async (e) => {
   const file = e.target.files[0];
   if (!file) return;
   uploadedFile = file;
+  hideError();
   const url = URL.createObjectURL(file);
   videoPreview.src = url;
   videoPreview.style.display = 'block';
   processBtn.disabled = false;
   resultsSection.style.display = 'none';
   clipsData = [];
+
+  const v = document.createElement('video');
+  v.preload = 'metadata';
+  v.src = url;
+  v.onloadedmetadata = () => {
+    videoDuration = v.duration;
+    updateAutoDuration();
+  };
 });
+
+function updateAutoDuration() {
+  const numClips = parseInt(clipCountInput.value) || 1;
+  if (videoDuration > 0) {
+    const perClip = (videoDuration / numClips).toFixed(1);
+    durText.textContent = perClip;
+    autoDuration.style.display = 'block';
+  }
+}
+clipCountInput.addEventListener('input', updateAutoDuration);
 
 async function loadFFmpeg() {
   if (ffmpegReady) return true;
   loadingOverlay.style.display = 'flex';
-  loadingText.textContent = 'Loading FFmpeg engine (one-time)...';
-  ffmpeg.on('log', ({ message }) => { console.log('FFmpeg:', message); });
+  loadingText.textContent = 'Loading FFmpeg engine (one-time, ~30MB)...';
+
+  ffmpeg.on('log', ({ message }) => {
+    console.log('FFmpeg:', message);
+  });
+
+  ffmpeg.on('progress', ({ progress }) => {
+    const pct = Math.round(progress * 100);
+    progressFill.style.width = pct + '%';
+  });
+
   const baseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd';
   try {
-    await ffmpeg.load({
-      coreURL: `${baseURL}/ffmpeg-core.js`,
-      wasmURL: `${baseURL}/ffmpeg-core.wasm`,
-    });
+    const coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
+    const wasmURL = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm');
+    await ffmpeg.load({ coreURL, wasmURL });
     ffmpegReady = true;
     loadingOverlay.style.display = 'none';
     return true;
   } catch (err) {
-    loadingText.textContent = 'Error loading FFmpeg: ' + err.message;
+    console.error('FFmpeg load error:', err);
+    loadingText.textContent = 'Error: ' + err.message;
+    showError('FFmpeg failed to load. Try refreshing the page. Make sure you are using Chrome or Edge.');
     return false;
   }
 }
@@ -242,64 +294,73 @@ function getCropFilter(ratio) {
 
 processBtn.addEventListener('click', async () => {
   if (!uploadedFile) return;
+  hideError();
   const ready = await loadFFmpeg();
   if (!ready) return;
 
   const ratio = document.getElementById('ratioSelect').value;
-  const numClips = parseInt(document.getElementById('clipCount').value);
-  const clipDur = parseInt(document.getElementById('clipDuration').value);
+  const numClips = parseInt(clipCountInput.value);
+
+  if (numClips < 2 || numClips > 20) {
+    showError('Clips should be between 2 and 20');
+    return;
+  }
+
+  const clipDur = videoDuration / numClips;
 
   processBtn.disabled = true;
   progressWrap.style.display = 'block';
   resultsSection.style.display = 'none';
   clipsData = [];
 
-  const v = document.createElement('video');
-  v.preload = 'metadata';
-  v.src = URL.createObjectURL(uploadedFile);
-  await new Promise(resolve => { v.onloadedmetadata = () => resolve(); });
-  const totalDuration = v.duration;
-  URL.revokeObjectURL(v.src);
-
-  const segmentDur = Math.max(1, totalDuration / numClips);
   const cropFilter = getCropFilter(ratio);
   const ext = uploadedFile.name.split('.').pop().toLowerCase();
+  const inputName = 'input.' + ext;
 
-  progressText.textContent = 'Preparing video...';
-  progressFill.style.width = '5%';
-  await ffmpeg.writeFile('input.' + ext, await fetchFile(uploadedFile));
+  try {
+    progressText.textContent = 'Preparing video...';
+    progressFill.style.width = '5%';
+    await ffmpeg.writeFile(inputName, await fetchFile(uploadedFile));
 
-  for (let i = 0; i < numClips; i++) {
-    const startTime = (i * segmentDur).toFixed(2);
-    const outName = `clip_${String(i + 1).padStart(2, '0')}.mp4`;
-    progressText.textContent = `Cutting clip ${i + 1} of ${numClips}...`;
-    progressFill.style.width = (5 + (i / numClips) * 85) + '%';
+    for (let i = 0; i < numClips; i++) {
+      const startTime = (i * clipDur).toFixed(2);
+      const outName = `clip_${String(i + 1).padStart(2, '0')}.mp4`;
 
-    await ffmpeg.exec([
-      '-ss', startTime,
-      '-i', 'input.' + ext,
-      '-t', String(clipDur),
-      '-vf', cropFilter,
-      '-c:v', 'libx264',
-      '-preset', 'fast',
-      '-crf', '26',
-      '-c:a', 'aac',
-      '-b:a', '128k',
-      '-movflags', '+faststart',
-      outName
-    ]);
+      progressText.textContent = `Cutting clip ${i + 1} of ${numClips}...`;
+      progressFill.style.width = (5 + (i / numClips) * 90) + '%';
 
-    const data = await ffmpeg.readFile(outName);
-    const blob = new Blob([data.buffer], { type: 'video/mp4' });
-    const url = URL.createObjectURL(blob);
-    clipsData.push({ name: outName, blob: blob, url: url, order: i });
-    await ffmpeg.deleteFile(outName);
+      await ffmpeg.exec([
+        '-ss', startTime,
+        '-i', inputName,
+        '-t', clipDur.toFixed(2),
+        '-vf', cropFilter,
+        '-c:v', 'libx264',
+        '-preset', 'ultrafast',
+        '-crf', '28',
+        '-c:a', 'aac',
+        '-b:a', '128k',
+        '-movflags', '+faststart',
+        outName
+      ]);
+
+      const data = await ffmpeg.readFile(outName);
+      const blob = new Blob([data], { type: 'video/mp4' });
+      const url = URL.createObjectURL(blob);
+      clipsData.push({ name: outName, blob: blob, url: url, order: i });
+
+      await ffmpeg.deleteFile(outName);
+    }
+
+    await ffmpeg.deleteFile(inputName);
+
+    progressFill.style.width = '100%';
+    progressText.textContent = 'Done!';
+    displayClips();
+  } catch (err) {
+    console.error('Processing error:', err);
+    showError('Error cutting video: ' + err.message);
   }
 
-  await ffmpeg.deleteFile('input.' + ext);
-  progressFill.style.width = '100%';
-  progressText.textContent = 'Done!';
-  displayClips();
   processBtn.disabled = false;
   progressWrap.style.display = 'none';
 });
@@ -308,7 +369,9 @@ function displayClips() {
   resultsSection.style.display = 'block';
   clipsGrid.innerHTML = '';
   clipCountText.textContent = `${clipsData.length} clips generated`;
+
   const sorted = [...clipsData].sort((a, b) => a.order - b.order);
+
   sorted.forEach((clip, idx) => {
     const card = document.createElement('div');
     card.className = 'clip-card';
@@ -321,6 +384,7 @@ function displayClips() {
     `;
     clipsGrid.appendChild(card);
   });
+
   resultsSection.scrollIntoView({ behavior: 'smooth' });
 }
 
@@ -336,12 +400,14 @@ downloadAllBtn.addEventListener('click', async () => {
   if (clipsData.length === 0) return;
   downloadAllBtn.disabled = true;
   downloadAllBtn.textContent = '⏳ Creating ZIP...';
+
   const zip = new JSZip();
   const sorted = [...clipsData].sort((a, b) => a.order - b.order);
   sorted.forEach((clip, idx) => {
     const name = `clip_${String(idx + 1).padStart(2, '0')}.mp4`;
     zip.file(name, clip.blob);
   });
+
   const content = await zip.generateAsync({ type: 'blob' });
   const url = URL.createObjectURL(content);
   const a = document.createElement('a');
@@ -351,6 +417,7 @@ downloadAllBtn.addEventListener('click', async () => {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+
   downloadAllBtn.disabled = false;
   downloadAllBtn.textContent = '⬇ Download All (ZIP)';
 });
