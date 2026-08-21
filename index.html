@@ -90,7 +90,7 @@ select:focus, input:focus { outline: none; border-color: #ff5252; }
 }
 .debug-log {
   margin-top: 10px; padding: 8px; background: #111; border-radius: 6px;
-  font-size: 0.7rem; color: #666; max-height: 120px; overflow-y: auto;
+  font-size: 0.7rem; color: #666; max-height: 150px; overflow-y: auto;
   display: none; font-family: monospace; white-space: pre-wrap; word-break: break-all;
 }
 </style>
@@ -100,7 +100,7 @@ select:focus, input:focus { outline: none; border-color: #ff5252; }
   <h1>🎬 ClipCutter</h1>
   <p class="subtitle">Upload video → Select ratio & clips → Cut → Shuffle → Download All</p>
   <div class="notice">
-    ⚠️ First time: FFmpeg engine loads (~30MB, 10-30 sec). Works best on Chrome/Edge. For large videos, use short clips.
+    ⚠️ First time: FFmpeg loads (~25MB, 10-30 sec). Use Chrome/Edge. For large videos, use fewer clips.
   </div>
   <div class="card">
     <h2><span class="step-num">1</span> Upload Video</h2>
@@ -158,18 +158,14 @@ select:focus, input:focus { outline: none; border-color: #ff5252; }
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/umd/index.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
 
 <script>
-const { FFmpeg } = FFmpegWASM;
-const { fetchFile, toBlobURL } = FFmpegUtil;
-const ffmpeg = new FFmpeg();
-
 let ffmpegReady = false;
 let uploadedFile = null;
 let videoDuration = 0;
 let clipsData = [];
+let ffmpeg = null;
 
 const fileInput = document.getElementById('fileInput');
 const videoPreview = document.getElementById('videoPreview');
@@ -197,6 +193,16 @@ function log(msg) {
 }
 function showError(msg) { errorBox.textContent = '❌ ' + msg; errorBox.style.display = 'block'; }
 function hideError() { errorBox.style.display = 'none'; }
+
+async function fetchAsBlobURL(url, mimeType) {
+  log('Fetching: ' + url);
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error('Failed to fetch ' + url + ': ' + resp.status);
+  const blob = await resp.blob();
+  const blobURL = URL.createObjectURL(new Blob([blob], { type: mimeType }));
+  log('Got blob URL for ' + url + ' (' + (blob.size / 1024 / 1024).toFixed(1) + ' MB)');
+  return blobURL;
+}
 
 fileInput.addEventListener('change', async (e) => {
   const file = e.target.files[0];
@@ -228,20 +234,36 @@ clipCountInput.addEventListener('input', updateAutoDuration);
 async function loadFFmpeg() {
   if (ffmpegReady) return true;
   loadingOverlay.style.display = 'flex';
-  loadingText.textContent = 'Loading FFmpeg (one-time, ~30MB)...';
+  loadingText.textContent = 'Loading FFmpeg (one-time, ~25MB)...';
 
-  ffmpeg.on('log', ({ message }) => { log('FFmpeg: ' + message); });
-
-  const baseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd';
   try {
-    loadingText.textContent = 'Downloading FFmpeg core...';
-    const coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
-    loadingText.textContent = 'Downloading FFmpeg WASM...';
-    const wasmURL = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm');
-    loadingText.textContent = 'Downloading FFmpeg worker...';
-    const workerURL = await toBlobURL(`https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/814.ffmpeg.js`, 'text/javascript');
+    const coreBase = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.11.0/dist';
+
+    loadingText.textContent = 'Downloading core (1/3)...';
+    const coreBlobURL = await fetchAsBlobURL(coreBase + '/ffmpeg-core.js', 'text/javascript');
+
+    loadingText.textContent = 'Downloading WASM (2/3)...';
+    const wasmBlobURL = await fetchAsBlobURL(coreBase + '/ffmpeg-core.wasm', 'application/wasm');
+
+    loadingText.textContent = 'Downloading worker (3/3)...';
+    const workerBlobURL = await fetchAsBlobURL(coreBase + '/ffmpeg-core.worker.js', 'text/javascript');
+
     loadingText.textContent = 'Starting FFmpeg engine...';
-    await ffmpeg.load({ coreURL, wasmURL, classWorkerURL: workerURL });
+    log('Creating FFmpeg instance with blob URLs...');
+
+    ffmpeg = FFmpeg.createFFmpeg({
+      corePath: coreBlobURL,
+      wasmPath: wasmBlobURL,
+      workerPath: workerBlobURL,
+      log: true,
+      progress: ({ ratio }) => {
+        if (ratio >= 0 && ratio <= 1) {
+          progressFill.style.width = Math.round(ratio * 100) + '%';
+        }
+      },
+    });
+
+    await ffmpeg.load();
     ffmpegReady = true;
     loadingOverlay.style.display = 'none';
     log('FFmpeg loaded successfully!');
@@ -249,8 +271,10 @@ async function loadFFmpeg() {
   } catch (err) {
     console.error('FFmpeg load error:', err);
     loadingOverlay.style.display = 'none';
-    showError('FFmpeg failed to load: ' + err.message + '. Try refreshing. Use Chrome/Edge.');
-    log('LOAD ERROR: ' + err.message);
+    const errMsg = err.message || String(err) || 'Unknown error';
+    showError('FFmpeg load failed: ' + errMsg + '. Try refreshing. Use Chrome/Edge.');
+    log('LOAD ERROR: ' + errMsg);
+    log('Stack: ' + (err.stack || 'no stack'));
     return false;
   }
 }
@@ -263,7 +287,7 @@ function getCropFilter(ratio) {
     '4:3':  { w: 'iw', h: 'iw*3/4', x: '0', y: '(ih-iw*3/4)/2' },
   };
   const r = ratios[ratio];
-  return `crop=${r.w}:${r.h}:${r.x}:${r.y}`;
+  return 'crop=' + r.w + ':' + r.h + ':' + r.x + ':' + r.y;
 }
 
 function getExt(filename) {
@@ -294,38 +318,38 @@ processBtn.addEventListener('click', async () => {
   try {
     progressText.textContent = 'Preparing video...';
     progressFill.style.width = '5%';
-    await ffmpeg.writeFile(inputName, await fetchFile(uploadedFile));
+    const fileData = new Uint8Array(await uploadedFile.arrayBuffer());
+    ffmpeg.FS('writeFile', inputName, fileData);
     log('Input written.');
     let useAudio = true;
     for (let i = 0; i < numClips; i++) {
       const startTime = (i * clipDur).toFixed(2);
-      const outName = `clip_${String(i + 1).padStart(2, '0')}.mp4`;
-      progressText.textContent = `Cutting clip ${i + 1} of ${numClips}...`;
+      const outName = 'clip_' + String(i + 1).padStart(2, '0') + '.mp4';
+      progressText.textContent = 'Cutting clip ' + (i + 1) + ' of ' + numClips + '...';
       progressFill.style.width = (5 + (i / numClips) * 90) + '%';
-      log(`Clip ${i+1}: start=${startTime}s`);
+      log('Clip ' + (i+1) + ': start=' + startTime + 's');
       let cmd = ['-i', inputName, '-ss', startTime, '-t', clipDur.toFixed(2), '-vf', cropFilter, '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28', '-pix_fmt', 'yuv420p'];
       if (useAudio) cmd.push('-c:a', 'aac', '-b:a', '128k'); else cmd.push('-an');
       cmd.push('-movflags', '+faststart', outName);
       try {
-        await ffmpeg.exec(cmd);
+        await ffmpeg.run.apply(ffmpeg, cmd);
       } catch (audioErr) {
         if (useAudio) {
           log('Audio failed, retrying without audio.');
           useAudio = false;
-          try { await ffmpeg.deleteFile(outName); } catch(e) {}
+          try { ffmpeg.FS('unlink', outName); } catch(e) {}
           cmd = ['-i', inputName, '-ss', startTime, '-t', clipDur.toFixed(2), '-vf', cropFilter, '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28', '-pix_fmt', 'yuv420p', '-an', '-movflags', '+faststart', outName];
-          await ffmpeg.exec(cmd);
+          await ffmpeg.run.apply(ffmpeg, cmd);
         } else { throw audioErr; }
       }
-      const data = await ffmpeg.readFile(outName);
-      const arrayBuffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
-      const blob = new Blob([arrayBuffer], { type: 'video/mp4' });
+      const data = ffmpeg.FS('readFile', outName);
+      const blob = new Blob([data.buffer], { type: 'video/mp4' });
       const url = URL.createObjectURL(blob);
       log('Clip ' + (i+1) + ' done: ' + (blob.size/1024).toFixed(1) + 'KB');
       clipsData.push({ name: outName, blob, url, order: i });
-      try { await ffmpeg.deleteFile(outName); } catch(e) {}
+      try { ffmpeg.FS('unlink', outName); } catch(e) {}
     }
-    try { await ffmpeg.deleteFile(inputName); } catch(e) {}
+    try { ffmpeg.FS('unlink', inputName); } catch(e) {}
     progressFill.style.width = '100%';
     progressText.textContent = 'Done!';
     log('All clips ready!');
@@ -342,12 +366,12 @@ processBtn.addEventListener('click', async () => {
 function displayClips() {
   resultsSection.style.display = 'block';
   clipsGrid.innerHTML = '';
-  clipCountText.textContent = `${clipsData.length} clips generated`;
+  clipCountText.textContent = clipsData.length + ' clips generated';
   const sorted = [...clipsData].sort((a, b) => a.order - b.order);
   sorted.forEach((clip, idx) => {
     const card = document.createElement('div');
     card.className = 'clip-card';
-    card.innerHTML = `<video src="${clip.url}" controls preload="metadata"></video><div class="clip-info">#${idx+1} ${clip.name}<br><a href="${clip.url}" download="${clip.name}">⬇ Download</a></div>`;
+    card.innerHTML = '<video src="' + clip.url + '" controls preload="metadata"></video><div class="clip-info">#' + (idx+1) + ' ' + clip.name + '<br><a href="' + clip.url + '" download="' + clip.name + '">⬇ Download</a></div>';
     clipsGrid.appendChild(card);
   });
   resultsSection.scrollIntoView({ behavior: 'smooth' });
@@ -367,7 +391,7 @@ downloadAllBtn.addEventListener('click', async () => {
   downloadAllBtn.textContent = '⏳ Creating ZIP...';
   const zip = new JSZip();
   const sorted = [...clipsData].sort((a, b) => a.order - b.order);
-  sorted.forEach((clip, idx) => { zip.file(`clip_${String(idx+1).padStart(2,'0')}.mp4`, clip.blob); });
+  sorted.forEach((clip, idx) => { zip.file('clip_' + String(idx+1).padStart(2,'0') + '.mp4', clip.blob); });
   const content = await zip.generateAsync({ type: 'blob' });
   const url = URL.createObjectURL(content);
   const a = document.createElement('a');
@@ -379,4 +403,4 @@ downloadAllBtn.addEventListener('click', async () => {
 });
 </script>
 </body>
-    </html>
+            </html>
