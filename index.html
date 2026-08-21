@@ -69,16 +69,6 @@ select:focus, input:focus { outline: none; border-color: #ff5252; }
 .clip-card video { width: 100%; height: 90px; object-fit: cover; background: #000; display: block; }
 .clip-info { padding: 6px 8px; font-size: 0.72rem; color: #888; }
 .clip-info a { color: #ff5252; text-decoration: none; }
-.loading-overlay {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.8); display: none;
-  align-items: center; justify-content: center; z-index: 9999; flex-direction: column;
-}
-.loading-overlay .spinner {
-  width: 50px; height: 50px; border: 4px solid #2a2a4a;
-  border-top: 4px solid #ff5252; border-radius: 50%; animation: spin 1s linear infinite;
-}
-.loading-overlay p { margin-top: 14px; color: #aaa; font-size: 0.85rem; text-align: center; padding: 0 20px; }
-@keyframes spin { to { transform: rotate(360deg); } }
 .notice {
   background: #1a2a1a; border: 1px solid #2a4a2a; border-radius: 8px;
   padding: 10px; font-size: 0.78rem; color: #8a8; margin-bottom: 14px;
@@ -88,20 +78,17 @@ select:focus, input:focus { outline: none; border-color: #ff5252; }
   padding: 10px; font-size: 0.78rem; color: #c88; margin-top: 10px;
   display: none; word-break: break-word;
 }
-.debug-log {
-  margin-top: 10px; padding: 8px; background: #111; border-radius: 6px;
-  font-size: 0.7rem; color: #666; max-height: 150px; overflow-y: auto;
-  display: none; font-family: monospace; white-space: pre-wrap; word-break: break-all;
-}
+#processingVideo { display: none; }
 </style>
 </head>
 <body>
 <div class="container">
   <h1>🎬 ClipCutter</h1>
-  <p class="subtitle">Upload video → Select ratio & clips → Cut → Shuffle → Download All</p>
+  <p class="subtitle">Upload → Select ratio & clips → Cut → Shuffle → Download</p>
   <div class="notice">
-    ⚠️ First time: FFmpeg loads (~25MB, 10-30 sec). Use Chrome/Edge. For large videos, use fewer clips.
+    ℹ️ No download needed — works entirely in browser! Processing is real-time (a 5s clip takes 5s to cut).
   </div>
+
   <div class="card">
     <h2><span class="step-num">1</span> Upload Video</h2>
     <label class="upload-zone" for="fileInput">
@@ -111,6 +98,7 @@ select:focus, input:focus { outline: none; border-color: #ff5252; }
     </label>
     <video id="videoPreview" controls></video>
   </div>
+
   <div class="card">
     <h2><span class="step-num">2</span> Settings</h2>
     <div class="form-row">
@@ -129,9 +117,10 @@ select:focus, input:focus { outline: none; border-color: #ff5252; }
       </div>
     </div>
     <div class="auto-duration" id="autoDuration">
-      Each clip will be ~<span id="durText">0</span> seconds long (auto-calculated)
+      Each clip will be ~<span id="durText">0</span> seconds (auto-calculated)
     </div>
   </div>
+
   <div class="card">
     <h2><span class="step-num">3</span> Cut Clips</h2>
     <button class="btn btn-primary" id="processBtn" disabled>Cut Video into Clips</button>
@@ -140,8 +129,8 @@ select:focus, input:focus { outline: none; border-color: #ff5252; }
       <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
       <div class="progress-text" id="progressText">Processing...</div>
     </div>
-    <div class="debug-log" id="debugLog"></div>
   </div>
+
   <div class="card" id="resultsSection">
     <h2><span class="step-num">4</span> Clips Ready!</h2>
     <div class="results-header">
@@ -152,20 +141,14 @@ select:focus, input:focus { outline: none; border-color: #ff5252; }
     <div class="clips-grid" id="clipsGrid"></div>
   </div>
 </div>
-<div class="loading-overlay" id="loadingOverlay">
-  <div class="spinner"></div>
-  <p id="loadingText">Loading FFmpeg engine...</p>
-</div>
+
+<video id="processingVideo" playsinline></video>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
-
 <script>
-let ffmpegReady = false;
 let uploadedFile = null;
 let videoDuration = 0;
 let clipsData = [];
-let ffmpeg = null;
 
 const fileInput = document.getElementById('fileInput');
 const videoPreview = document.getElementById('videoPreview');
@@ -178,30 +161,28 @@ const clipsGrid = document.getElementById('clipsGrid');
 const clipCountText = document.getElementById('clipCountText');
 const shuffleBtn = document.getElementById('shuffleBtn');
 const downloadAllBtn = document.getElementById('downloadAllBtn');
-const loadingOverlay = document.getElementById('loadingOverlay');
-const loadingText = document.getElementById('loadingText');
 const errorBox = document.getElementById('errorBox');
-const debugLog = document.getElementById('debugLog');
 const autoDuration = document.getElementById('autoDuration');
 const durText = document.getElementById('durText');
 const clipCountInput = document.getElementById('clipCount');
+const processingVideo = document.getElementById('processingVideo');
 
-function log(msg) {
-  console.log(msg);
-  debugLog.style.display = 'block';
-  debugLog.textContent += msg + '\n';
-}
 function showError(msg) { errorBox.textContent = '❌ ' + msg; errorBox.style.display = 'block'; }
 function hideError() { errorBox.style.display = 'none'; }
 
-async function fetchAsBlobURL(url, mimeType) {
-  log('Fetching: ' + url);
-  const resp = await fetch(url);
-  if (!resp.ok) throw new Error('Failed to fetch ' + url + ': ' + resp.status);
-  const blob = await resp.blob();
-  const blobURL = URL.createObjectURL(new Blob([blob], { type: mimeType }));
-  log('Got blob URL for ' + url + ' (' + (blob.size / 1024 / 1024).toFixed(1) + ' MB)');
-  return blobURL;
+function getSupportedMime() {
+  const types = [
+    'video/mp4;codecs=h264,aac',
+    'video/mp4;codecs=h264',
+    'video/mp4',
+    'video/webm;codecs=vp9,opus',
+    'video/webm;codecs=vp8,opus',
+    'video/webm'
+  ];
+  for (const t of types) {
+    if (MediaRecorder.isTypeSupported(t)) return { mime: t, ext: t.includes('mp4') ? 'mp4' : 'webm' };
+  }
+  return { mime: 'video/webm', ext: 'webm' };
 }
 
 fileInput.addEventListener('change', async (e) => {
@@ -209,7 +190,6 @@ fileInput.addEventListener('change', async (e) => {
   if (!file) return;
   uploadedFile = file;
   hideError();
-  debugLog.textContent = '';
   const url = URL.createObjectURL(file);
   videoPreview.src = url;
   videoPreview.style.display = 'block';
@@ -219,146 +199,184 @@ fileInput.addEventListener('change', async (e) => {
   const v = document.createElement('video');
   v.preload = 'metadata';
   v.src = url;
-  v.onloadedmetadata = () => { videoDuration = v.duration; log('Duration: ' + videoDuration + 's'); updateAutoDuration(); };
+  v.onloadedmetadata = () => {
+    videoDuration = v.duration;
+    updateAutoDuration();
+  };
 });
 
 function updateAutoDuration() {
-  const numClips = parseInt(clipCountInput.value) || 1;
+  const n = parseInt(clipCountInput.value) || 1;
   if (videoDuration > 0) {
-    durText.textContent = (videoDuration / numClips).toFixed(1);
+    durText.textContent = (videoDuration / n).toFixed(1);
     autoDuration.style.display = 'block';
   }
 }
 clipCountInput.addEventListener('input', updateAutoDuration);
 
-async function loadFFmpeg() {
-  if (ffmpegReady) return true;
-  loadingOverlay.style.display = 'flex';
-  loadingText.textContent = 'Loading FFmpeg (one-time, ~25MB)...';
-
-  try {
-    const coreBase = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.11.0/dist';
-
-    loadingText.textContent = 'Downloading core (1/3)...';
-    const coreBlobURL = await fetchAsBlobURL(coreBase + '/ffmpeg-core.js', 'text/javascript');
-
-    loadingText.textContent = 'Downloading WASM (2/3)...';
-    const wasmBlobURL = await fetchAsBlobURL(coreBase + '/ffmpeg-core.wasm', 'application/wasm');
-
-    loadingText.textContent = 'Downloading worker (3/3)...';
-    const workerBlobURL = await fetchAsBlobURL(coreBase + '/ffmpeg-core.worker.js', 'text/javascript');
-
-    loadingText.textContent = 'Starting FFmpeg engine...';
-    log('Creating FFmpeg instance with blob URLs...');
-
-    ffmpeg = FFmpeg.createFFmpeg({
-      corePath: coreBlobURL,
-      wasmPath: wasmBlobURL,
-      workerPath: workerBlobURL,
-      log: true,
-      progress: ({ ratio }) => {
-        if (ratio >= 0 && ratio <= 1) {
-          progressFill.style.width = Math.round(ratio * 100) + '%';
-        }
-      },
-    });
-
-    await ffmpeg.load();
-    ffmpegReady = true;
-    loadingOverlay.style.display = 'none';
-    log('FFmpeg loaded successfully!');
-    return true;
-  } catch (err) {
-    console.error('FFmpeg load error:', err);
-    loadingOverlay.style.display = 'none';
-    const errMsg = err.message || String(err) || 'Unknown error';
-    showError('FFmpeg load failed: ' + errMsg + '. Try refreshing. Use Chrome/Edge.');
-    log('LOAD ERROR: ' + errMsg);
-    log('Stack: ' + (err.stack || 'no stack'));
-    return false;
+function getCrop(vw, vh, ratio) {
+  let cw, ch, cx, cy;
+  switch (ratio) {
+    case '16:9':
+      cw = vw; ch = Math.round(vw * 9 / 16);
+      if (ch > vh) { ch = vh; cw = Math.round(vh * 16 / 9); }
+      break;
+    case '9:16':
+      ch = vh; cw = Math.round(vh * 9 / 16);
+      if (cw > vw) { cw = vw; ch = Math.round(vw * 16 / 9); }
+      break;
+    case '1:1':
+      cw = ch = Math.min(vw, vh);
+      break;
+    case '4:3':
+      cw = vw; ch = Math.round(vw * 3 / 4);
+      if (ch > vh) { ch = vh; cw = Math.round(vh * 4 / 3); }
+      break;
   }
+  cx = Math.round((vw - cw) / 2);
+  cy = Math.round((vh - ch) / 2);
+  const maxDim = 1280;
+  let ow = cw, oh = ch;
+  if (cw > maxDim || ch > maxDim) {
+    if (cw > ch) { ow = maxDim; oh = Math.round(ch * maxDim / cw); }
+    else { oh = maxDim; ow = Math.round(cw * maxDim / ch); }
+  }
+  ow = Math.round(ow / 2) * 2;
+  oh = Math.round(oh / 2) * 2;
+  return { cw, ch, cx, cy, ow, oh };
 }
 
-function getCropFilter(ratio) {
-  const ratios = {
-    '16:9': { w: 'iw', h: 'iw*9/16', x: '0', y: '(ih-iw*9/16)/2' },
-    '9:16': { w: 'ih*9/16', h: 'ih', x: '(iw-ih*9/16)/2', y: '0' },
-    '1:1':  { w: 'min(iw,ih)', h: 'min(iw,ih)', x: '(iw-min(iw,ih))/2', y: '(ih-min(iw,ih))/2' },
-    '4:3':  { w: 'iw', h: 'iw*3/4', x: '0', y: '(ih-iw*3/4)/2' },
-  };
-  const r = ratios[ratio];
-  return 'crop=' + r.w + ':' + r.h + ':' + r.x + ':' + r.y;
-}
+function cutClip(video, startTime, duration, ratio, audioDest, mimeInfo) {
+  return new Promise((resolve, reject) => {
+    const vw = video.videoWidth;
+    const vh = video.videoHeight;
+    const crop = getCrop(vw, vh, ratio);
 
-function getExt(filename) {
-  const parts = filename.split('.');
-  return parts.length < 2 ? 'mp4' : parts.pop().toLowerCase();
+    const canvas = document.createElement('canvas');
+    canvas.width = crop.ow;
+    canvas.height = crop.oh;
+    const ctx = canvas.getContext('2d');
+
+    const canvasStream = canvas.captureStream(30);
+    const tracks = [...canvasStream.getVideoTracks()];
+    if (audioDest && audioDest.stream.getAudioTracks().length > 0) {
+      tracks.push(audioDest.stream.getAudioTracks()[0]);
+    }
+    const combined = new MediaStream(tracks);
+
+    let recorder;
+    try {
+      recorder = new MediaRecorder(combined, {
+        mimeType: mimeInfo.mime,
+        videoBitsPerSecond: 6000000
+      });
+    } catch (e) {
+      recorder = new MediaRecorder(combined);
+    }
+
+    const chunks = [];
+    recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+    recorder.onstop = () => {
+      const type = mimeInfo.mime.split(';')[0];
+      const blob = new Blob(chunks, { type });
+      resolve(blob);
+    };
+    recorder.onerror = (e) => reject(new Error('Recorder error: ' + e.error));
+
+    const endTime = startTime + duration;
+
+    video.currentTime = startTime;
+    video.onseeked = () => {
+      try {
+        recorder.start(200);
+      } catch(e) {
+        reject(new Error('Failed to start recorder: ' + e.message));
+        return;
+      }
+      video.play().catch(e => {
+        video.muted = true;
+        video.play().catch(e2 => reject(new Error('Cannot play video: ' + e2.message)));
+      });
+
+      function drawFrame() {
+        if (video.paused || video.ended || video.currentTime >= endTime) {
+          video.pause();
+          setTimeout(() => {
+            if (recorder.state !== 'inactive') recorder.stop();
+          }, 250);
+          return;
+        }
+        ctx.drawImage(video, crop.cx, crop.cy, crop.cw, crop.ch, 0, 0, crop.ow, crop.oh);
+        requestAnimationFrame(drawFrame);
+      }
+      drawFrame();
+    };
+  });
 }
 
 processBtn.addEventListener('click', async () => {
   if (!uploadedFile) return;
   hideError();
-  debugLog.textContent = '';
-  log('Starting...');
-  const ready = await loadFFmpeg();
-  if (!ready) return;
+
   const ratio = document.getElementById('ratioSelect').value;
   const numClips = parseInt(clipCountInput.value);
+
   if (numClips < 2 || numClips > 20) { showError('Clips should be 2-20'); return; }
-  if (videoDuration <= 0) { showError('Could not read video duration.'); return; }
+  if (videoDuration <= 0) { showError('Could not read video duration. Try another file.'); return; }
+
   const clipDur = videoDuration / numClips;
-  const cropFilter = getCropFilter(ratio);
-  const ext = getExt(uploadedFile.name);
-  const inputName = 'input.' + ext;
-  log('Clip dur: ' + clipDur.toFixed(2) + 's, File: ' + (uploadedFile.size/1024/1024).toFixed(2) + 'MB');
+  const mimeInfo = getSupportedMime();
+
   processBtn.disabled = true;
   progressWrap.style.display = 'block';
   resultsSection.style.display = 'none';
   clipsData = [];
+  progressFill.style.width = '0%';
+  progressText.textContent = 'Loading video...';
+
   try {
-    progressText.textContent = 'Preparing video...';
-    progressFill.style.width = '5%';
-    const fileData = new Uint8Array(await uploadedFile.arrayBuffer());
-    ffmpeg.FS('writeFile', inputName, fileData);
-    log('Input written.');
-    let useAudio = true;
-    for (let i = 0; i < numClips; i++) {
-      const startTime = (i * clipDur).toFixed(2);
-      const outName = 'clip_' + String(i + 1).padStart(2, '0') + '.mp4';
-      progressText.textContent = 'Cutting clip ' + (i + 1) + ' of ' + numClips + '...';
-      progressFill.style.width = (5 + (i / numClips) * 90) + '%';
-      log('Clip ' + (i+1) + ': start=' + startTime + 's');
-      let cmd = ['-i', inputName, '-ss', startTime, '-t', clipDur.toFixed(2), '-vf', cropFilter, '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28', '-pix_fmt', 'yuv420p'];
-      if (useAudio) cmd.push('-c:a', 'aac', '-b:a', '128k'); else cmd.push('-an');
-      cmd.push('-movflags', '+faststart', outName);
-      try {
-        await ffmpeg.run.apply(ffmpeg, cmd);
-      } catch (audioErr) {
-        if (useAudio) {
-          log('Audio failed, retrying without audio.');
-          useAudio = false;
-          try { ffmpeg.FS('unlink', outName); } catch(e) {}
-          cmd = ['-i', inputName, '-ss', startTime, '-t', clipDur.toFixed(2), '-vf', cropFilter, '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28', '-pix_fmt', 'yuv420p', '-an', '-movflags', '+faststart', outName];
-          await ffmpeg.run.apply(ffmpeg, cmd);
-        } else { throw audioErr; }
-      }
-      const data = ffmpeg.FS('readFile', outName);
-      const blob = new Blob([data.buffer], { type: 'video/mp4' });
-      const url = URL.createObjectURL(blob);
-      log('Clip ' + (i+1) + ' done: ' + (blob.size/1024).toFixed(1) + 'KB');
-      clipsData.push({ name: outName, blob, url, order: i });
-      try { ffmpeg.FS('unlink', outName); } catch(e) {}
+    processingVideo.src = URL.createObjectURL(uploadedFile);
+    processingVideo.load();
+
+    await new Promise((resolve, reject) => {
+      processingVideo.onloadedmetadata = resolve;
+      processingVideo.onerror = () => reject(new Error('Cannot load video'));
+    });
+
+    let audioCtx = null;
+    let audioDest = null;
+    try {
+      audioCtx = new AudioContext();
+      await audioCtx.resume();
+      const source = audioCtx.createMediaElementSource(processingVideo);
+      audioDest = audioCtx.createMediaStreamDestination();
+      source.connect(audioDest);
+    } catch (e) {
+      console.log('Audio setup failed (video may have no audio):', e);
     }
-    try { ffmpeg.FS('unlink', inputName); } catch(e) {}
+
+    for (let i = 0; i < numClips; i++) {
+      const startTime = i * clipDur;
+      progressText.textContent = 'Cutting clip ' + (i + 1) + ' of ' + numClips + ' (real-time)...';
+      progressFill.style.width = Math.round((i / numClips) * 100) + '%';
+
+      const blob = await cutClip(processingVideo, startTime, clipDur, ratio, audioDest, mimeInfo);
+      const url = URL.createObjectURL(blob);
+      const name = 'clip_' + String(i + 1).padStart(2, '0') + '.' + mimeInfo.ext;
+      clipsData.push({ name, blob, url, order: i });
+    }
+
+    if (audioCtx) { try { await audioCtx.close(); } catch(e){} }
+
     progressFill.style.width = '100%';
     progressText.textContent = 'Done!';
-    log('All clips ready!');
     displayClips();
+
   } catch (err) {
-    console.error('Processing error:', err);
-    log('ERROR: ' + (err.message || err));
-    showError('Error: ' + (err.message || err) + '. Try a smaller video.');
+    console.error('Error:', err);
+    showError('Error: ' + err.message + '. Try a shorter/smaller video.');
   }
+
   processBtn.disabled = false;
   progressWrap.style.display = 'none';
 });
@@ -371,7 +389,9 @@ function displayClips() {
   sorted.forEach((clip, idx) => {
     const card = document.createElement('div');
     card.className = 'clip-card';
-    card.innerHTML = '<video src="' + clip.url + '" controls preload="metadata"></video><div class="clip-info">#' + (idx+1) + ' ' + clip.name + '<br><a href="' + clip.url + '" download="' + clip.name + '">⬇ Download</a></div>';
+    card.innerHTML = '<video src="' + clip.url + '" controls preload="metadata"></video>' +
+      '<div class="clip-info">#' + (idx + 1) + ' ' + clip.name + '<br>' +
+      '<a href="' + clip.url + '" download="' + clip.name + '">⬇ Download</a></div>';
     clipsGrid.appendChild(card);
   });
   resultsSection.scrollIntoView({ behavior: 'smooth' });
@@ -391,7 +411,9 @@ downloadAllBtn.addEventListener('click', async () => {
   downloadAllBtn.textContent = '⏳ Creating ZIP...';
   const zip = new JSZip();
   const sorted = [...clipsData].sort((a, b) => a.order - b.order);
-  sorted.forEach((clip, idx) => { zip.file('clip_' + String(idx+1).padStart(2,'0') + '.mp4', clip.blob); });
+  sorted.forEach((clip, idx) => {
+    zip.file('clip_' + String(idx + 1).padStart(2, '0') + '.' + clip.name.split('.').pop(), clip.blob);
+  });
   const content = await zip.generateAsync({ type: 'blob' });
   const url = URL.createObjectURL(content);
   const a = document.createElement('a');
@@ -403,4 +425,4 @@ downloadAllBtn.addEventListener('click', async () => {
 });
 </script>
 </body>
-            </html>
+  </html>
