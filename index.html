@@ -321,7 +321,7 @@ processBtn.addEventListener('click', async () => {
   const ratio = document.getElementById('ratioSelect').value;
   const numClips = parseInt(clipCountInput.value);
 
-  if (numClips < 2 || numClips > 20) { showError('Clips should be 2-20'); return; }
+  if (numClips < 2 || numClips > 100) { showError('Clips should be 2-100'); return; }
   if (videoDuration <= 0) { showError('Could not read video duration. Try another file.'); return; }
 
   const clipDur = videoDuration / numClips;
@@ -429,4 +429,4 @@ downloadAllBtn.addEventListener('click', async () => {
 });
 </script>
 </body>
-      </html>
+          </html>
