@@ -124,7 +124,7 @@ select:focus, input:focus { outline: none; border-color: #ff5252; }
   <p class="subtitle">Upload video → Select ratio & clips → Cut → Shuffle → Download All</p>
 
   <div class="notice">
-    ⚠️ First time: FFmpeg engine loads (~30MB, 10-20 sec). Works best on Chrome/Edge. For large videos, use short clips.
+    ⚠️ First time: FFmpeg engine loads (~25MB, 10-20 sec). Works best on Chrome/Edge. For large videos, use short clips.
   </div>
 
   <div class="card">
@@ -187,18 +187,25 @@ select:focus, input:focus { outline: none; border-color: #ff5252; }
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.6/dist/umd/ffmpeg.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/umd/index.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
 
 <script>
-const { FFmpeg } = FFmpegWASM;
-const { fetchFile, toBlobURL } = FFmpegUtil;
-const ffmpeg = new FFmpeg();
+const { createFFmpeg } = FFmpeg;
+
+const ffmpeg = createFFmpeg({
+  corePath: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js',
+  log: true,
+  progress: ({ ratio }) => {
+    if (ratio >= 0 && ratio <= 1) {
+      const pct = Math.round(ratio * 100);
+      progressFill.style.width = pct + '%';
+    }
+  },
+});
 
 let ffmpegReady = false;
 let uploadedFile = null;
 let videoDuration = 0;
-let hasAudio = false;
 let clipsData = [];
 
 const fileInput = document.getElementById('fileInput');
@@ -252,9 +259,7 @@ fileInput.addEventListener('change', async (e) => {
   v.src = url;
   v.onloadedmetadata = () => {
     videoDuration = v.duration;
-    const audioTracks = v.audioTracks;
-    hasAudio = audioTracks ? audioTracks.length > 0 : true;
-    log('Video duration: ' + videoDuration + 's, hasAudio: ' + hasAudio);
+    log('Video duration: ' + videoDuration + 's');
     updateAutoDuration();
   };
 });
@@ -272,30 +277,20 @@ clipCountInput.addEventListener('input', updateAutoDuration);
 async function loadFFmpeg() {
   if (ffmpegReady) return true;
   loadingOverlay.style.display = 'flex';
-  loadingText.textContent = 'Loading FFmpeg engine (one-time, ~30MB)...';
+  loadingText.textContent = 'Loading FFmpeg engine (one-time, ~25MB)...';
 
-  const logLines = [];
-  ffmpeg.on('log', ({ message }) => {
-    logLines.push(message);
-    if (logLines.length > 30) logLines.shift();
-    log('FFmpeg: ' + message);
-  });
-
-  const baseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd';
   try {
     loadingText.textContent = 'Downloading FFmpeg core...';
-    const coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
-    loadingText.textContent = 'Downloading FFmpeg WASM...';
-    const wasmURL = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm');
-    loadingText.textContent = 'Starting FFmpeg engine...';
-    await ffmpeg.load({ coreURL, wasmURL });
+    await ffmpeg.load();
     ffmpegReady = true;
     loadingOverlay.style.display = 'none';
+    log('FFmpeg loaded successfully!');
     return true;
   } catch (err) {
     console.error('FFmpeg load error:', err);
     loadingOverlay.style.display = 'none';
     showError('FFmpeg failed to load: ' + err.message + '. Try refreshing page. Use Chrome or Edge browser.');
+    log('LOAD ERROR: ' + err.message);
     return false;
   }
 }
@@ -341,7 +336,7 @@ processBtn.addEventListener('click', async () => {
   const clipDur = videoDuration / numClips;
   const cropFilter = getCropFilter(ratio);
   const ext = getExt(uploadedFile.name);
-  const inputName = 'input_' + ext;
+  const inputName = 'input.' + ext;
 
   log('Clip duration: ' + clipDur.toFixed(2) + 's');
   log('Crop filter: ' + cropFilter);
@@ -357,7 +352,9 @@ processBtn.addEventListener('click', async () => {
     progressText.textContent = 'Preparing video...';
     progressFill.style.width = '5%';
     log('Writing input file to FFmpeg...');
-    await ffmpeg.writeFile(inputName, await fetchFile(uploadedFile));
+
+    const fileData = new Uint8Array(await uploadedFile.arrayBuffer());
+    ffmpeg.FS('writeFile', inputName, fileData);
     log('Input file written.');
 
     let useAudio = true;
@@ -391,11 +388,13 @@ processBtn.addEventListener('click', async () => {
 
       try {
         log('Running FFmpeg with audio...');
-        await ffmpeg.exec(cmd);
+        await ffmpeg.run(...cmd);
       } catch (audioErr) {
         if (useAudio) {
-          log('Audio failed, retrying without audio: ' + audioErr.message);
+          log('Audio failed, retrying without audio: ' + (audioErr.message || audioErr));
           useAudio = false;
+          try { ffmpeg.FS('unlink', outName); } catch(e) {}
+
           cmd = [
             '-i', inputName,
             '-ss', startTime,
@@ -409,26 +408,24 @@ processBtn.addEventListener('click', async () => {
             '-movflags', '+faststart',
             outName
           ];
-          await ffmpeg.exec(cmd);
+          await ffmpeg.run(...cmd);
         } else {
           throw audioErr;
         }
       }
 
       log('Reading output: ' + outName);
-      const data = await ffmpeg.readFile(outName);
-      
-      const arrayBuffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
-      const blob = new Blob([arrayBuffer], { type: 'video/mp4' });
+      const data = ffmpeg.FS('readFile', outName);
+      const blob = new Blob([data.buffer], { type: 'video/mp4' });
       const url = URL.createObjectURL(blob);
-      
+
       log('Clip ' + (i+1) + ' done, size: ' + (blob.size / 1024).toFixed(1) + ' KB');
       clipsData.push({ name: outName, blob: blob, url: url, order: i });
 
-      await ffmpeg.deleteFile(outName);
+      try { ffmpeg.FS('unlink', outName); } catch(e) {}
     }
 
-    try { await ffmpeg.deleteFile(inputName); } catch(e) {}
+    try { ffmpeg.FS('unlink', inputName); } catch(e) {}
 
     progressFill.style.width = '100%';
     progressText.textContent = 'Done!';
@@ -437,8 +434,8 @@ processBtn.addEventListener('click', async () => {
 
   } catch (err) {
     console.error('Processing error:', err);
-    log('ERROR: ' + err.message);
-    showError('Error cutting video: ' + err.message + '. Check debug log below. Try a smaller/shorter video.');
+    log('ERROR: ' + (err.message || err));
+    showError('Error cutting video: ' + (err.message || err) + '. Check debug log below. Try a smaller/shorter video.');
   }
 
   processBtn.disabled = false;
@@ -503,4 +500,4 @@ downloadAllBtn.addEventListener('click', async () => {
 });
 </script>
 </body>
-</html>
+      </html>
