@@ -385,8 +385,7 @@ function displayClips() {
   resultsSection.style.display = 'block';
   clipsGrid.innerHTML = '';
   clipCountText.textContent = clipsData.length + ' clips generated';
-  const sorted = [...clipsData].sort((a, b) => a.order - b.order);
-  sorted.forEach((clip, idx) => {
+  clipsData.forEach((clip, idx) => {
     const card = document.createElement('div');
     card.className = 'clip-card';
     card.innerHTML = '<video src="' + clip.url + '" controls preload="metadata"></video>' +
@@ -400,8 +399,13 @@ function displayClips() {
 shuffleBtn.addEventListener('click', () => {
   for (let i = clipsData.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
-    [clipsData[i].order, clipsData[j].order] = [clipsData[j].order, clipsData[i].order];
+    [clipsData[i], clipsData[j]] = [clipsData[j], clipsData[i]];
   }
+  clipsData.forEach((clip, idx) => {
+    const ext = clip.name.split('.').pop();
+    clip.name = 'clip_' + String(idx + 1).padStart(2, '0') + '.' + ext;
+    clip.order = idx;
+  });
   displayClips();
 });
 
@@ -410,9 +414,9 @@ downloadAllBtn.addEventListener('click', async () => {
   downloadAllBtn.disabled = true;
   downloadAllBtn.textContent = '⏳ Creating ZIP...';
   const zip = new JSZip();
-  const sorted = [...clipsData].sort((a, b) => a.order - b.order);
-  sorted.forEach((clip, idx) => {
-    zip.file('clip_' + String(idx + 1).padStart(2, '0') + '.' + clip.name.split('.').pop(), clip.blob);
+  clipsData.forEach((clip, idx) => {
+    const ext = clip.name.split('.').pop();
+    zip.file('clip_' + String(idx + 1).padStart(2, '0') + '.' + ext, clip.blob);
   });
   const content = await zip.generateAsync({ type: 'blob' });
   const url = URL.createObjectURL(content);
@@ -425,4 +429,4 @@ downloadAllBtn.addEventListener('click', async () => {
 });
 </script>
 </body>
-  </html>
+      </html>
